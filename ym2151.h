@@ -29,7 +29,7 @@ uint8_t ym_read(int reg);                  /* reg 0/1: status */
 void    ym_write(int reg, uint8_t value);  /* reg 0 = address latch, 1 = data */
 void    ym_audio_on(void);                 /* start generating samples from now */
 /* add n stereo samples at `rate` Hz, ending at the current CPU cycle, into buf */
-void    ym_mix(int16_t *buf, int n, int rate);
+void    ym_mix(int16_t *buf, int n, double rate);
 void    ym_log_open(FILE *f);              /* "<frame> <reg> <val>" per data write */
 void    ym_log_frame(long frame);          /* the frame stamped on the next writes */
 

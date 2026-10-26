@@ -1,6 +1,7 @@
 /* ym2151.cpp -- the A2VERA's YM2151 on ymfm (plan E14).  See ym2151.h. */
 #include "ym2151.h"
 #include "extern/ymfm/ymfm_opm.h"
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 
@@ -10,6 +11,7 @@ extern "C" unsigned int ticks;             /* puce6502.c: the CPU cycle counter 
 #define CPU_HZ  1020484.0                  /* a2core.c A2_CPU_HZ */
 #define YM_RATE (YM_HZ / 64.0)             /* one OPM sample per 64 clocks */
 #define RING    16384                      /* samples, ~0.3 s */
+#define LAG     4                          /* samples kept ahead of the reader */
 
 int           g_ym_enabled = 1;
 unsigned long g_ym_writes, g_ym_busy_writes;
@@ -39,7 +41,7 @@ public:
 	/* fire the timers that ran out by now (expiry reloads them through set_timer) */
 	void sync() {
 		for (int i = 0; i < 2; i++)
-			if (m_timer_on[i] && (int)(ticks - m_timer_at[i]) >= 0) {
+			while (m_timer_on[i] && (int)(ticks - m_timer_at[i]) >= 0) {
 				unsigned late = ticks - m_timer_at[i];
 				m_engine->engine_timer_expired(i);
 				if (m_timer_on[i]) m_timer_at[i] -= late;   /* keep the period exact */
@@ -118,20 +120,19 @@ void ym_write(int reg, uint8_t value) {
 
 void ym_audio_on(void) {
 	if (audio) return;
-	audio = true; gen_last = ticks; gen_frac = 0; rd = wr = 0; rd_frac = 0;
+	audio = true; gen_last = ticks; gen_frac = 0; rd = 0; wr = LAG; rd_frac = 0;
+	for (int i = 0; i < LAG; i++) ring[i][0] = ring[i][1] = 0;
 }
 
-void ym_mix(int16_t *buf, int n, int rate) {
+void ym_mix(int16_t *buf, int n, double rate) {
 	if (!g_ym_enabled || !audio) return;
 	chip.sync();
 	gen_to_now();
-	/* resample the ring (YM_RATE) to `rate`, linear between neighbours (step =
-	   YM_RATE / rate); on an underrun hold the last sample (the two clocks agree to
-	   a sample) */
+	/* resample the ring (YM_RATE) to `rate`, linear; hold the last sample on an underrun */
 	double step = YM_RATE / rate;
 	for (int i = 0; i < n; i++) {
-		unsigned a = (wr - rd > 0) ? rd : (wr ? wr - 1 : 0);
-		unsigned b = (wr - rd > 1) ? rd + 1 : a;
+		unsigned a = rd, b = rd + 1;
+		if (wr - rd < 2) a = b = wr - 1;
 		double f = rd_frac;
 		double sl = ring[a % RING][0] + (ring[b % RING][0] - ring[a % RING][0]) * f;
 		double sr = ring[a % RING][1] + (ring[b % RING][1] - ring[a % RING][1]) * f;
@@ -142,8 +143,7 @@ void ym_mix(int16_t *buf, int n, int rate) {
 		rd_frac += step;
 		while (rd_frac >= 1.0) { rd_frac -= 1.0; if (wr - rd > 0) rd++; }
 	}
-	/* never fall behind by more than a frame's worth (keeps the latency fixed) */
-	if (wr - rd > (unsigned)(YM_RATE / 30)) rd = wr - (unsigned)(YM_RATE / 60);
+	if (wr - rd > (unsigned)(YM_RATE / 30)) rd = wr - LAG;
 }
 
 void ym_log_open(FILE *f) { logf = f; }

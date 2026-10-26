@@ -78,7 +78,7 @@ void a2audio_frame(long frame) {
 		unsigned n = acc / SAMPLE_CLOCKS;
 		acc %= SAMPLE_CLOCKS;
 		vc_audio_render(buf, (int)n);
-		ym_mix(buf, (int)n, WAV_RATE);              /* + the YM2151 (E14), to this cycle */
+		ym_mix(buf, (int)n, 25e6 / 512);            /* + the YM2151 (E14), to this cycle */
 		uint8_t out[4 * 1024];
 		for (unsigned i = 0; i < 2 * n; i++) le16(out + 2 * i, (uint16_t)buf[i]);
 		fwrite(out, 1, 4 * n, wav_f);

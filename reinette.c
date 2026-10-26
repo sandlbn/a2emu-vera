@@ -121,7 +121,7 @@ static void vera_audio_run(void) {
 	if (n > 4096) n = 4096;
 	if (!n || (!veraAudio && !wav_out)) return;
 	vc_audio_render(buf, (int)n);                             /* always: PCM FIFO timing */
-	ym_mix(buf, (int)n, 48828);                               /* + the YM2151 (E14) */
+	ym_mix(buf, (int)n, 48828.125);                           /* + the YM2151 (E14) */
 	if (wav_out && !muted) {                                   /* A2_WAV (little-endian host) */
 		fwrite(buf, 4, (size_t)n, wav_out);
 		wav_n += (uint32_t)n;
