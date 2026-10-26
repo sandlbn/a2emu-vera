@@ -52,14 +52,18 @@ static void sdl_playSound(void) {
 #ifndef MAC_FRONTEND   /* POSIniX/Mac: speaker audio deferred -- avoids pulling
                         * 64-bit float libgcc helpers into the text-mode port */
 	static unsigned int lastTick = 0;
+	static double frac = 0;
 	static bool SPKR = false;                                                     // $C030 Speaker toggle
 
 	if (!muted) {
 		SPKR = !SPKR;                                                               // toggle speaker state
-		Uint32 length = (int)((double)(ticks - lastTick) / 10.65625f);              // 1023000Hz / 96000Hz = 10.65625
+		double len = (ticks - lastTick) * (96000.0 / 1020484.0) + frac;
 		lastTick = ticks;
-		if (length > audioBufferSize) length = audioBufferSize;
-		SDL_QueueAudio(audioDevice, audioBuffer[SPKR], length | 1);                 // | 1 TO HEAR HIGH FREQ SOUNDS
+		if (len > audioBufferSize) { frac = 0; return; }                            // long gap: queue nothing
+		Uint32 length = (Uint32)len;
+		frac = len - length;
+		if (SDL_GetQueuedAudioSize(audioDevice) < 96000 / 10)
+			SDL_QueueAudio(audioDevice, audioBuffer[SPKR], length);
 	}
 #endif
 }
@@ -120,7 +124,7 @@ static void vera_audio_run(void) {
 	acc %= 1020484000ull;
 	if (n > 4096) n = 4096;
 	if (!n || (!veraAudio && !wav_out)) return;
-	vc_audio_render(buf, (int)n);                             /* always: PCM FIFO timing */
+	vc_audio_render(buf, (int)n);
 	ym_mix(buf, (int)n, 48828.125);                           /* + the YM2151 (E14) */
 	if (wav_out && !muted) {                                   /* A2_WAV (little-endian host) */
 		fwrite(buf, 4, (size_t)n, wav_out);
@@ -129,7 +133,7 @@ static void vera_audio_run(void) {
 	if (!veraAudio) return;
 	/* the main loop's pacing keeps the queue near AUDIO_TARGET (the sound card is the
 	   clock); only a big backlog (after warp / a pause) is dropped */
-	if (!muted && SDL_GetQueuedAudioSize(veraAudio) < 48828u * 4u / 4u)
+	if (!muted && SDL_GetQueuedAudioSize(veraAudio) < 48828u * 4u / 10u)
 		SDL_QueueAudio(veraAudio, buf, (Uint32)n * 4u);
 }
 

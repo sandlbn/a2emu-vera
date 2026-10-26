@@ -115,9 +115,11 @@ psg_reset(void)
 
 uint8_t vc_psg_peak[16];
 uint8_t vc_dbg_psg_peak(int ch){ return vc_psg_peak[ch & 15]; }
+static void audio_render(void);
 static void
 psg_writereg(uint8_t reg, uint8_t val)
 {
+    audio_render();
     reg &= 0x3f;
     int ch  = reg / 4;
     int idx = reg & 3;
@@ -279,73 +281,90 @@ static bool pcm_is_fifo_almost_empty(void)
     return pcm_fifo_cnt < 1024;
 }
 
-/* audio_render — called before PCM register writes to catch up audio state */
-static void audio_render(void) { }
+extern unsigned int ticks;
 
-/* vc_audio_render — mix PSG + PCM into stereo int16 buffer.
- * Called from SDL audio callback. Sample rate = 25MHz / 512 ≈ 48828 Hz.
- * We resample to the SDL output rate in the callback. */
-static int audio_diag_count = 0;
+#define AUD_RING 8192
+#define AUD_LAG  4
 
-void vc_audio_render(int16_t *buf, int num_samples)
+static int16_t  aud_ring[AUD_RING][2];
+static unsigned aud_rd, aud_wr, aud_last;
+static unsigned long long aud_acc;
+
+static void audio_sample(int16_t *out)
 {
-    /* audio diag stderr spam removed */
-    for (int i = 0; i < num_samples; i++) {
-        int16_t psg_buf[2];
-        psg_render(psg_buf, 1);
+    int16_t psg[2];
+    psg_render(psg, 1);
 
-        /* PCM: consume samples from FIFO at pcm_rate.
-         * Rate 0 = off. Rate N = N * 25MHz/65536 ≈ N * 381 Hz.
-         * At rate 128: ~48828 Hz (matches our base rate). */
-        int16_t pcm_l = pcm_cur_l;
-        int16_t pcm_r = pcm_cur_r;
-
-        if (pcm_rate > 0) {
-            pcm_phase += pcm_rate;
-            if (pcm_phase >= 128) {
-                pcm_phase -= 128;
-                if (pcm_fifo_cnt > 0) {
-                    if (pcm_ctrl & 0x10) {
-                        /* Stereo */
-                        int8_t sl = (int8_t)pcm_read_fifo();
-                        int8_t sr = (pcm_fifo_cnt > 0) ? (int8_t)pcm_read_fifo() : sl;
-                        if (pcm_ctrl & 0x20) {
-                            /* 16-bit */
-                            int16_t sl16 = (sl << 8) | ((pcm_fifo_cnt > 0) ? pcm_read_fifo() : 0);
-                            int16_t sr16 = (sr << 8) | ((pcm_fifo_cnt > 0) ? pcm_read_fifo() : 0);
-                            pcm_cur_l = sl16;
-                            pcm_cur_r = sr16;
-                        } else {
-                            pcm_cur_l = sl << 8;
-                            pcm_cur_r = sr << 8;
-                        }
-                    } else {
-                        /* Mono */
-                        int8_t s = (int8_t)pcm_read_fifo();
-                        if (pcm_ctrl & 0x20) {
-                            int16_t s16 = (s << 8) | ((pcm_fifo_cnt > 0) ? pcm_read_fifo() : 0);
-                            pcm_cur_l = pcm_cur_r = s16;
-                        } else {
-                            pcm_cur_l = pcm_cur_r = s << 8;
-                        }
-                    }
-                } else if (pcm_loop) {
-                    pcm_fifo_restart();
+    if (pcm_rate > 0) {
+        pcm_phase += pcm_rate;
+        if (pcm_phase >= 128) {
+            pcm_phase -= 128;
+            if (pcm_fifo_cnt > 0) {
+                switch (pcm_ctrl & 0x30) {
+                    case 0x00:
+                        pcm_cur_l = pcm_cur_r = (int8_t)pcm_read_fifo() * 256;
+                        break;
+                    case 0x10:
+                        pcm_cur_l = (int8_t)pcm_read_fifo() * 256;
+                        pcm_cur_r = (int8_t)pcm_read_fifo() * 256;
+                        break;
+                    case 0x20:
+                        pcm_cur_l  = pcm_read_fifo();
+                        pcm_cur_l |= pcm_read_fifo() << 8;
+                        pcm_cur_r  = pcm_cur_l;
+                        break;
+                    case 0x30:
+                        pcm_cur_l  = pcm_read_fifo();
+                        pcm_cur_l |= pcm_read_fifo() << 8;
+                        pcm_cur_r  = pcm_read_fifo();
+                        pcm_cur_r |= pcm_read_fifo() << 8;
+                        break;
                 }
-                pcm_l = pcm_cur_l;
-                pcm_r = pcm_cur_r;
+            } else if (pcm_loop) {
+                pcm_fifo_restart();
             }
         }
-
-        /* Apply PCM volume (4-bit, from ctrl bits 3:0) */
-        int vol = pcm_volume_lut[pcm_ctrl & 0x0F];
-        pcm_l = (pcm_l * vol) >> 6;
-        pcm_r = (pcm_r * vol) >> 6;
-
-        /* Mix PSG + PCM */
-        buf[i * 2 + 0] = psg_buf[0] + pcm_l;
-        buf[i * 2 + 1] = psg_buf[1] + pcm_r;
     }
+
+    int vol = pcm_volume_lut[pcm_ctrl & 0x0F];
+    int l = psg[0] + ((pcm_cur_l * vol) >> 6);
+    int r = psg[1] + ((pcm_cur_r * vol) >> 6);
+    out[0] = l < -32768 ? -32768 : l > 32767 ? 32767 : l;
+    out[1] = r < -32768 ? -32768 : r > 32767 ? 32767 : r;
+}
+
+/* render the samples owed up to the current CPU cycle (25 MHz / 512 per sample) */
+static void audio_render(void)
+{
+    unsigned d = ticks - aud_last;
+    aud_last = ticks;
+    aud_acc += (unsigned long long)d * 48828125ull;
+    while (aud_acc >= 1020484000ull) {
+        aud_acc -= 1020484000ull;
+        if (aud_wr - aud_rd >= AUD_RING) aud_rd++;
+        audio_sample(aud_ring[aud_wr++ % AUD_RING]);
+    }
+}
+
+static void audio_reset(void)
+{
+    memset(aud_ring, 0, sizeof(aud_ring));
+    aud_rd = 0;
+    aud_wr = AUD_LAG;
+    aud_last = ticks;
+    aud_acc = 0;
+}
+
+/* vc_audio_render — the PSG + PCM samples up to now, 48,828 Hz stereo */
+void vc_audio_render(int16_t *buf, int num_samples)
+{
+    audio_render();
+    for (int i = 0; i < num_samples; i++) {
+        unsigned k = (aud_wr - aud_rd > 0 ? aud_rd++ : aud_wr - 1) % AUD_RING;
+        buf[i * 2 + 0] = aud_ring[k][0];
+        buf[i * 2 + 1] = aud_ring[k][1];
+    }
+    if (aud_wr - aud_rd > 48828 / 30) aud_rd = aud_wr - AUD_LAG;
 }
 
 /* ================================================================
@@ -1719,7 +1738,7 @@ video_read_reg(uint8_t reg)
         }
         case 0x05: return (io_dcsel << 1) | io_addrsel;
         case 0x06: return ((irq_line & 0x100) >> 1) | ((scanline & 0x100) >> 2) | (ien & 0xF);
-        case 0x07: { uint8_t rv = isr | (pcm_is_fifo_almost_empty() ? 8 : 0);
+        case 0x07: { audio_render(); uint8_t rv = isr | (pcm_is_fifo_almost_empty() ? 8 : 0);
                      vc_isr_reads++; if (rv & 1) vc_isr_set++;
                      return rv; }
         case 0x08: return scanline & 0xFF;
@@ -2068,6 +2087,7 @@ void vc_init(vc_t *v)
     memset(v, 0, sizeof(*v));
     active_vera = v;
     video_reset();
+    audio_reset();
 
     /* Set output mode to VGA with layer 0 enabled */
     reg_composer[0] = 0x21; /* VGA output + L0 enable */
@@ -2152,6 +2172,7 @@ int vc_tick(vc_t *v, int cycles)
         v->frame_count = frame_count;
     }
 
+    audio_render();
     v->irq_out = video_get_irq_out();
     return v->irq_out;
 }

@@ -5,8 +5,8 @@
  *                  48828).  Rendered once per VERA frame: a frame is 800 x 525
  *                  pixel clocks = 420,000 / 512 = 820.3125 samples, carried with
  *                  an integer remainder, so the sample count is exact over any
- *                  run.  Register writes therefore take effect at frame
- *                  boundaries (the game writes the PSG in the VSYNC IRQ anyway).
+ *                  run.  The samples themselves are generated as the CPU runs,
+ *                  so register writes land on the sample they were made at.
  *   --psglog FILE  the 64 PSG register bytes ($1F9C0-$1F9FF) after every VERA
  *                  frame in which they changed: "<frame> <128 hex digits>\n"
  *                  (frame = a2run's count of completed frames, 1-based; frame 0
