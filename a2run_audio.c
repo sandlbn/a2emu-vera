@@ -11,6 +11,10 @@
  *                  frame in which they changed: "<frame> <128 hex digits>\n"
  *                  (frame = a2run's count of completed frames, 1-based; frame 0
  *                  is the state at start).
+ *   --psgvlog FILE the same, but sampled at each VSYNC before the CPU takes the
+ *                  VSYNC IRQ: "<n> <128 hex>" with n = the VSYNC count, i.e. the
+ *                  registers after the previous IRQ's work however long it ran (a
+ *                  tick of the PSG music may outlast the 45 lines to the frame end).
  * Both are deterministic: the PSG model (incl. its noise LFSR) starts from reset
  * and only depends on the register writes and the frame count. */
 #include <stdio.h>
@@ -25,7 +29,9 @@
 #define SAMPLE_CLOCKS 512u              /* one PSG sample */
 #define PSG_REGS      0x1F9C0
 
-static FILE *wav_f, *log_f;
+static FILE *wav_f, *log_f, *vlog_f;
+static uint8_t vlast[64];
+static int vstarted;
 static uint32_t wav_samples, acc;
 static uint8_t last_regs[64];
 static int log_started;
@@ -67,6 +73,22 @@ static void log_regs(long frame) {
 	fputc('\n', log_f);
 }
 
+int a2audio_open_psgvlog(const char *path) {
+	vlog_f = fopen(path, "w");
+	return vlog_f != NULL;
+}
+
+void a2audio_vsync(long n) {
+	if (!vlog_f) return;
+	const uint8_t *r = vc_vram() + PSG_REGS;
+	if (vstarted && !memcmp(r, vlast, 64)) return;
+	vstarted = 1;
+	memcpy(vlast, r, 64);
+	fprintf(vlog_f, "%ld ", n);
+	for (int i = 0; i < 64; i++) fprintf(vlog_f, "%02x", r[i]);
+	fputc('\n', vlog_f);
+}
+
 void a2audio_frame(long frame) {
 	if (log_f) {
 		if (!log_started) log_regs(0);
@@ -94,4 +116,5 @@ void a2audio_close(void) {
 		wav_f = NULL;
 	}
 	if (log_f) { fclose(log_f); log_f = NULL; }
+	if (vlog_f) { fclose(vlog_f); vlog_f = NULL; }
 }

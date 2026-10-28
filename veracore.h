@@ -87,6 +87,7 @@ int vc_irq_active(vc_t *v);
    Call once per emulated frame; run 17030 CPU cycles/frame separately so Apple II
    speed is independent of VERA video timing. */
 void vc_vsync_irq(vc_t *v);
+extern unsigned long vc_vsync_raised;   /* VSYNCs the core has raised (a2run --psgvlog) */
 
 /* internal 128KB VRAM pointer for the monitor tap */
 uint8_t *vc_vram(void);

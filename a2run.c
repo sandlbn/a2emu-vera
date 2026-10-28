@@ -40,6 +40,8 @@
  *     --wav FILE            the VERA PSG + PCM mix as a WAV (48,828 Hz stereo 16-bit; E9,
  *                           a2run_audio.c)
  *     --psglog FILE         the PSG registers after every frame that changed them
+ *     --psgvlog FILE        the same, sampled at each VSYNC before its IRQ runs (the
+ *                           state after the previous IRQ's work; a2run_audio.c)
  *     --ym on|off           the A2VERA's YM2151 at VERA base + $20 (E14; default on,
  *                           env A2_YM); its audio is in the --wav mix
  *     --ymlog FILE          every YM2151 data write: "<frame> <reg> <val>" (hex)
@@ -259,6 +261,7 @@ int main(int argc, char **argv) {
 		else if (!strcmp(a, "--stop-pc"))     stop_pc = parse_addr(ARG);
 		else if (!strcmp(a, "--pctrace"))     { pctrace = atoi(ARG); if (pctrace > 4096) pctrace = 4096; }
 		else if (!strcmp(a, "--wav"))         { if (!a2audio_open_wav(ARG)) { fprintf(stderr, "a2run: cannot write %s\n", argv[i]); return 2; } }
+		else if (!strcmp(a, "--psgvlog"))     { if (!a2audio_open_psgvlog(ARG)) { fprintf(stderr, "a2run: cannot write %s\n", argv[i]); return 2; } }
 		else if (!strcmp(a, "--psglog"))      { if (!a2audio_open_psglog(ARG)) { fprintf(stderr, "a2run: cannot write %s\n", argv[i]); return 2; } }
 		else if (a[0] != '-' && !disk1)       disk1 = a;
 		else { fprintf(stderr, "a2run: unknown option %s (see the header of a2run.c)\n", a); return 2; }
@@ -314,8 +317,10 @@ int main(int argc, char **argv) {
 	int code = 124;
 	if (input) a2in_frame(0);
 
+	unsigned long vs_last = vc_vsync_raised; long vs_n = 0;
 	for (;;) {
 		cpu_vera_step();
+		if (vc_vsync_raised != vs_last) { vs_last = vc_vsync_raised; a2audio_vsync(++vs_n); }
 		if (pctrace || stop_pc >= 0) {
 			Puce6502State ps; puce6502GetState(&ps);
 			pcring[pcpos++ & 4095] = ps.pc;

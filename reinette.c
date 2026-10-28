@@ -80,7 +80,10 @@ static SDL_AudioDeviceID veraAudio;
 
 static void vera_audio_open(void) {
 	SDL_AudioSpec want = { 48828, AUDIO_S16SYS, 2, 0, 1024, 0, 0, NULL, NULL };
-	veraAudio = SDL_OpenAudioDevice(NULL, 0, &want, NULL, 0);
+	SDL_AudioSpec have;
+	veraAudio = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+	if (getenv("A2_FPS"))
+		fprintf(stderr, "a2emu: card audio %d Hz %d ch fmt %04X (asked 48828 Hz)\n", have.freq, have.channels, have.format);
 	if (veraAudio) { SDL_PauseAudioDevice(veraAudio, 0); ym_audio_on(); }
 }
 
@@ -802,11 +805,17 @@ int main(int argc, char *argv[]) {
 			running = false;
 		}
 
-		if (getenv("A2_FPS")) {                             /* A2_FPS=1: print loops per second */
-			static uint64_t fps_t0 = 0; static int fps_n = 0;
+		if (getenv("A2_FPS")) {                             /* A2_FPS=1: emulated clock and VERA frame rate */
+			static uint64_t fps_t0 = 0; static unsigned fps_c0, fps_v0;
 			uint64_t t = SDL_GetPerformanceCounter();
-			if (!fps_t0) fps_t0 = t;
-			if (++fps_n, t - fps_t0 >= pf_hz) { fprintf(stderr, "a2emu: %d fps (%s), audio queue %d samples\n", fps_n, warp ? "warp" : "1.02 MHz", audio_queued()); fps_n = 0; fps_t0 = t; }
+			if (!fps_t0) { fps_t0 = t; fps_c0 = ticks; fps_v0 = (unsigned)vc_vsync_raised; }
+			if (t - fps_t0 >= pf_hz) {
+				double sec = (double)(t - fps_t0) / (double)pf_hz;
+				fprintf(stderr, "a2emu: %.3f MHz, %.2f VERA frames/s (%s), audio queue %d samples\n",
+				        (double)(ticks - fps_c0) / sec / 1e6, (double)((unsigned)vc_vsync_raised - fps_v0) / sec,
+				        warp ? "warp" : "real time", audio_queued());
+				fps_t0 = t; fps_c0 = ticks; fps_v0 = (unsigned)vc_vsync_raised;
+			}
 		}
 		if (!warp && !rv_shotat) {                          /* real-time pacing */
 			int q = audio_queued();                         /* trim by the audio queue: */
