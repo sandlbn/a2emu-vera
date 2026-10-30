@@ -1239,6 +1239,7 @@ render_sprite_line(const uint16_t y)
                 }
             }
         }
+        if (sprite_budget == 0) break;  /* out of time mid-sprite: the rest of the line is too */
     }
 }
 
