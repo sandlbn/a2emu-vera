@@ -60,6 +60,10 @@ void puce6502GetState(Puce6502State*);
 #define NTSC_X_OFFSET        270
 #define NTSC_Y_OFFSET_LOW    42
 #define NTSC_Y_OFFSET_HIGH   568
+/* composite: next-line strobe (pixel clocks), line counter restarts (half-lines) */
+#define NTSC_NEXT_LINE       235
+#define NTSC_FRAME_START_1   42
+#define NTSC_FRAME_START_2   568
 #define TITLE_SAFE_X         0.067f
 #define TITLE_SAFE_Y         0.05f
 
@@ -196,6 +200,7 @@ static unsigned pcm_fifo_cnt;
 
 static uint8_t pcm_ctrl;
 static uint8_t pcm_rate;
+static uint8_t pcm_rate_reg;    /* as written, reads back unclamped */
 static uint8_t pcm_loop;
 
 static uint8_t pcm_volume_lut[16] = {0, 1, 2, 3, 4, 5, 6, 8, 11, 14, 18, 23, 30, 38, 49, 64};
@@ -221,6 +226,7 @@ static void pcm_reset(void)
     pcm_fifo_reset();
     pcm_ctrl  = 0;
     pcm_rate  = 0;
+    pcm_rate_reg = 0;
     pcm_cur_l = 0;
     pcm_cur_r = 0;
     pcm_phase = 0;
@@ -248,12 +254,13 @@ static uint8_t pcm_read_ctrl(void)
 
 static void pcm_write_rate(uint8_t val)
 {
+    pcm_rate_reg = val;
     pcm_rate = (val > 128) ? (256 - val) : val;
 }
 
 static uint8_t pcm_read_rate(void)
 {
-    return pcm_rate;
+    return pcm_rate_reg;
 }
 
 static int pcm_total_writes = 0;
@@ -416,7 +423,7 @@ static uint8_t vera_spi_read(uint8_t reg)
     switch (reg) {
         case 0: {
             uint8_t b = spi_received_byte;
-            if (spi_autotx && spi_ss && !spi_busy) spi_start_byte(0xff);
+            if (spi_autotx && !spi_busy) spi_start_byte(0xff);
             return b;
         }
         case 1:
@@ -430,7 +437,7 @@ static void vera_spi_write(uint8_t reg, uint8_t value)
     spi_update();
     switch (reg) {
         case 0:
-            if (spi_ss && !spi_busy) spi_start_byte(value);
+            if (!spi_busy) spi_start_byte(value);
             break;
         case 1:
             if (spi_ss != (value & 1)) {
@@ -536,6 +543,8 @@ static uint16_t vga_scan_pos_y;
 int vc_norender = 0;             /* set to skip the scanline renderer (measurements): vsync still fires, framebuffer isn't drawn */
 static float    ntsc_half_cnt;
 static uint16_t ntsc_scan_pos_y;
+static uint16_t ntsc_y_counter, ntsc_y_counter_prev;  /* composer line counter, steps by 2 */
+static bool     ntsc_field;
 static int      frame_count;
 
 static uint8_t framebuffer[SCREEN_WIDTH * SCREEN_HEIGHT * 4];
@@ -908,6 +917,10 @@ get_and_inc_address(uint8_t sel, bool write)
     uint32_t address = io_addr[sel];
     int16_t incr = increments[io_inc[sel]];
 
+    /* DATA1 reads in polygon mode don't step while 2-bit poke mode is armed */
+    if (sel == 1 && fx_addr1_mode == 2 && fx_2bit_poking && !write)
+        return address;
+
     if (fx_4bit_mode && fx_nibble_incr[sel] && !incr) {
         if (fx_nibble_bit[sel]) {
             if ((io_inc[sel] & 1) == 0) io_addr[sel] += 1;
@@ -961,6 +974,8 @@ get_and_inc_address(uint8_t sel, bool write)
         fx_x_pixel_position += fx_x_pixel_increment;
         fx_y_pixel_position += fx_y_pixel_increment;
     }
+    io_addr[0] &= 0x1ffff;
+    io_addr[1] &= 0x1ffff;
     return address;
 }
 
@@ -998,6 +1013,13 @@ fx_affine_prefetch(void)
  * DC value read (FX register readback)
  * ================================================================ */
 
+/* the hardware computes it from the current X/Y positions all the time */
+static void
+update_fill_length(void)
+{
+    fx_poly_fill_length = (((int32_t)fx_y_pixel_position >> 16) - ((int32_t)fx_x_pixel_position >> 16)) & 0x3ff;
+}
+
 static uint8_t
 video_get_dc_value(uint8_t reg)
 {
@@ -1017,6 +1039,7 @@ video_get_dc_value(uint8_t reg)
         case 0x14: return (fx_x_pixel_position >> 8) & 0xff;
         case 0x15: return (fx_y_pixel_position >> 8) & 0xff;
         case 0x16: /* DCSEL=5, FX_POLY_FILL_L */
+            update_fill_length();
             if (fx_poly_fill_length >= 768) {
                 return ((fx_2bit_poly && fx_addr1_mode == 2) ? 0x00 : 0x80);
             }
@@ -1038,7 +1061,9 @@ video_get_dc_value(uint8_t reg)
                     ((fx_x_pixel_position >> 11) & 0x60) |
                     ((fx_poly_fill_length & 0x000f) << 1);
             }
-        case 0x17: return ((fx_poly_fill_length & 0x03f8) >> 2);
+        case 0x17:
+            update_fill_length();
+            return ((fx_poly_fill_length & 0x03f8) >> 2);
         case 0x18: return fx_cache[0];
         case 0x19: return fx_cache[1];
         case 0x1a: return fx_cache[2];
@@ -1125,6 +1150,8 @@ video_reset(void)
     vga_scan_pos_y = 0;
     ntsc_half_cnt = 0;
     ntsc_scan_pos_y = 0;
+    ntsc_y_counter = 0;
+    ntsc_y_counter_prev = 0;
 
     psg_reset();
     pcm_reset();
@@ -1201,9 +1228,10 @@ render_sprite_line(const uint16_t y)
 
             if (col_index > 0) {
                 sprite_line_collisions |= sprite_line_mask[line_x] & props->sprite_collision_mask;
-                sprite_line_mask[line_x] |= props->sprite_collision_mask;
 
+                /* a sprite that loses on Z (equal Z too) isn't written, nor is its mask */
                 if (props->sprite_zdepth > sprite_line_z[line_x]) {
+                    sprite_line_mask[line_x] |= props->sprite_collision_mask;
                     if (col_index < 16)
                         col_index += props->palette_offset;
                     sprite_line_col[line_x] = col_index;
@@ -1612,16 +1640,37 @@ render_line(uint16_t y, float scan_pos_x)
  * ================================================================ */
 
 static void
+vsync_isr(void)
+{
+    if (sprite_line_collisions != 0) isr |= 4;
+    isr = (isr & 0xf) | sprite_line_collisions;
+    sprite_line_collisions = 0;
+    isr |= 1; vc_vsync_raised++; /* VSYNC IRQ */
+}
+
+static void
 update_isr_and_coll(uint16_t y, uint16_t compare)
 {
-    if (y == SCREEN_HEIGHT) {
-        if (sprite_line_collisions != 0) isr |= 4;
-        isr = (isr & 0xf) | sprite_line_collisions;
-        sprite_line_collisions = 0;
-        isr |= 1; vc_vsync_raised++; /* VSYNC IRQ */
-    }
+    if (y == SCREEN_HEIGHT)
+        vsync_isr();
     if (y == compare)
         isr |= 2; /* LINE IRQ */
+}
+
+/* composite LINE irq compares the counter before it steps, bit 0 ignored */
+static void
+ntsc_next_line(bool ntsc_mode)
+{
+    if (ntsc_mode && (ntsc_y_counter >> 1) == (irq_line >> 1))
+        isr |= 2;
+    ntsc_y_counter_prev = ntsc_y_counter;
+    ntsc_y_counter = (ntsc_y_counter + 2) & 0x3ff;
+    if (ntsc_scan_pos_y == NTSC_FRAME_START_1 || ntsc_scan_pos_y == NTSC_FRAME_START_2) {
+        ntsc_field = ntsc_scan_pos_y == NTSC_FRAME_START_2;
+        ntsc_y_counter = ntsc_field;
+        if (ntsc_mode)
+            reg_composer[0] = (reg_composer[0] & 0x7f) | (ntsc_field ? 0x80 : 0);
+    }
 }
 
 /* ================================================================
@@ -1651,6 +1700,8 @@ video_step_internal(float steps)
         if (vga_scan_pos_y == SCAN_HEIGHT) {
             vga_scan_pos_y = 0;
             if (!ntsc_mode) {
+                /* the composite timing keeps running, the field bit follows it */
+                reg_composer[0] = (reg_composer[0] & 0x7f) | (ntsc_field ? 0x80 : 0);
                 new_frame = true;
                 frame_count++;
             }
@@ -1659,9 +1710,17 @@ video_step_internal(float steps)
             update_isr_and_coll(vga_scan_pos_y - VGA_Y_OFFSET, irq_line);
     }
 
+    float ntsc_from = ntsc_half_cnt;
+    uint16_t field_len = (reg_composer[0] & 8) ? SCAN_HEIGHT + 1 : SCAN_HEIGHT;  /* 240p: 263 lines */
     ntsc_half_cnt += PIXEL_FREQ * steps / CPU_MHZ;
-    while (ntsc_half_cnt > NTSC_HALF_SCAN_WIDTH) {   /* see above */
+    for (;;) {   /* one half-line per pass, see above */
+        float to = ntsc_half_cnt > NTSC_HALF_SCAN_WIDTH ? NTSC_HALF_SCAN_WIDTH : ntsc_half_cnt;
+        if (!(ntsc_scan_pos_y & 1) && ntsc_from < NTSC_NEXT_LINE && to >= NTSC_NEXT_LINE)
+            ntsc_next_line(ntsc_mode);
+        if (ntsc_half_cnt <= NTSC_HALF_SCAN_WIDTH)
+            break;
         ntsc_half_cnt -= NTSC_HALF_SCAN_WIDTH;
+        ntsc_from = 0;
         if (ntsc_mode) {
             if (ntsc_scan_pos_y < SCAN_HEIGHT) {
                 y = ntsc_scan_pos_y - NTSC_Y_OFFSET_LOW;
@@ -1674,26 +1733,20 @@ video_step_internal(float steps)
             }
         }
         ntsc_scan_pos_y++;
-        if (ntsc_scan_pos_y == SCAN_HEIGHT) {
-            reg_composer[0] |= 0x80;
+        if (ntsc_scan_pos_y == field_len) {
             if (ntsc_mode) {
+                vsync_isr();
                 new_frame = true;
                 frame_count++;
             }
         }
-        if (ntsc_scan_pos_y == SCAN_HEIGHT * 2) {
-            reg_composer[0] &= ~0x80;
+        if (ntsc_scan_pos_y >= field_len * 2) {
             ntsc_scan_pos_y = 0;
             if (ntsc_mode) {
+                vsync_isr();
                 new_frame = true;
                 frame_count++;
             }
-        }
-        if (ntsc_mode) {
-            if (ntsc_scan_pos_y < SCAN_HEIGHT)
-                update_isr_and_coll(ntsc_scan_pos_y - NTSC_Y_OFFSET_LOW, irq_line & ~1);
-            else
-                update_isr_and_coll(ntsc_scan_pos_y - NTSC_Y_OFFSET_HIGH, irq_line & ~1);
         }
     }
 
@@ -1716,8 +1769,13 @@ static uint8_t
 video_read_reg(uint8_t reg)
 {
     bool ntsc_mode = reg_composer[0] & 2;
-    uint16_t scanline = ntsc_mode ? ntsc_scan_pos_y % SCAN_HEIGHT : vga_scan_pos_y;
-    if (scanline >= 512) scanline = 511;
+    uint16_t scanline;
+    if (ntsc_mode)
+        scanline = ntsc_y_counter_prev >= 512 ? 511 : ntsc_y_counter & 0x1ff;
+    else if (vga_scan_pos_y >= 512)
+        scanline = 511;
+    else
+        scanline = (vga_scan_pos_y + 1) & 0x1ff;  /* the counter has moved on as line L starts */
 
     switch (reg & 0x1F) {
         case 0x00: return io_addr[io_addrsel] & 0xff;
@@ -1791,12 +1849,16 @@ video_read_reg(uint8_t reg)
             return vera_version_string[i % 4];
         }
 
+        case 0x11: case 0x13:   /* the high scroll bytes are 4 bits */
+            return reg_layer[0][reg - 0x0D] & 0x0f;
         case 0x0D: case 0x0E: case 0x0F:
-        case 0x10: case 0x11: case 0x12: case 0x13:
+        case 0x10: case 0x12:
             return reg_layer[0][reg - 0x0D];
 
+        case 0x18: case 0x1A:
+            return reg_layer[1][reg - 0x14] & 0x0f;
         case 0x14: case 0x15: case 0x16:
-        case 0x17: case 0x18: case 0x19: case 0x1A:
+        case 0x17: case 0x19:
             return reg_layer[1][reg - 0x14];
 
         case 0x1B: audio_render(); return pcm_read_ctrl();
@@ -1869,7 +1931,8 @@ unsigned long vc_wr_nz[16];
                     }
                 }
             }
-            if (fx_2bit_poking && fx_addr1_mode) {
+            /* poke mode only takes a DATA1 write in polygon mode; DATA0 writes are normal */
+            if (fx_2bit_poking && fx_addr1_mode == 2 && reg == 4) {
                 fx_2bit_poking = false;
                 uint8_t mask = value >> 6;
                 switch (mask) {
@@ -1920,7 +1983,10 @@ unsigned long vc_wr_nz[16];
                 ram_wrdata[3] = wrdata_to_use;
             }
 
-            if (fx_cache_write) {
+            if (address >= ADDR_PSG_START) {
+                /* FX write modes only apply to VRAM: PSG, palette and sprites get the plain byte */
+                video_space_write(address, value);
+            } else if (fx_cache_write) {
                 address &= 0x1fffc;
                 if (fx_trans_writes) {
                     if (fx_4bit_mode) {
@@ -1979,6 +2045,11 @@ unsigned long vc_wr_nz[16];
                 if (((reg_composer[0] & 0x8) == 0 && (value & 0x8)) ||
                     ((reg_composer[0] & 0x3) == 1 && (value & 0x3) > 1 && (value & 0x8))) {
                     memset(framebuffer, 0x00, SCREEN_WIDTH * SCREEN_HEIGHT * 4);
+                }
+                /* one line counter: going to composite it carries on from the VGA line */
+                if ((reg_composer[0] & 2) == 0 && (value & 2)) {
+                    ntsc_y_counter = (vga_scan_pos_y + 1) & 0x3ff;
+                    ntsc_y_counter_prev = vga_scan_pos_y;
                 }
                 reg_composer[0] = (reg_composer[0] & ~0x7f) | (value & 0x7f);
                 video_palette.dirty = true;
