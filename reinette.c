@@ -603,8 +603,8 @@ int main(int argc, char *argv[]) {
 				case SDLK_BACKQUOTE:    KBD = shift? 0xFE: 0xE0;   break;               // ` ~
 				case SDLK_LEFT:         KBD = 0x88;                break;               // BS
 				case SDLK_RIGHT:        KBD = 0x95;                break;               // NAK
-				case SDLK_UP:   if (g_iie) KBD = 0x8B;             break;               // IIe: up arrow (VT)
-				case SDLK_DOWN: if (g_iie) KBD = 0x8A;             break;               // IIe: down arrow (LF)
+				case SDLK_UP:           KBD = 0x8B;                break;               // up arrow (VT, ctrl-K on II+)
+				case SDLK_DOWN:         KBD = 0x8A;                break;               // down arrow (LF, ctrl-J on II+)
 				case SDLK_SPACE:        KBD = 0xA0;                break;
 				case SDLK_ESCAPE:       KBD = 0x9B;                break;               // ESC
 				case SDLK_RETURN:       KBD = 0x8D;                break;               // CR
