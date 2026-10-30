@@ -10,7 +10,7 @@
  * All rights reserved. License: 2-clause BSD
  *
  * Includes: video rendering (layers, sprites, compositor), FX extensions,
- * PSG synthesizer (16 channels), PCM audio with FIFO, SPI stub.
+ * PSG synthesizer (16 channels), PCM audio with FIFO, SPI with SD card.
  */
 
 #include <stdio.h>
@@ -26,6 +26,7 @@ void puce6502GetState(Puce6502State*);
 #include <math.h>
 
 #include "veracore.h"
+#include "sdcard.h"
 
 /* ================================================================
  * Build configuration
@@ -368,56 +369,75 @@ void vc_audio_render(int16_t *buf, int num_samples)
 }
 
 /* ================================================================
- * SPI — stub (no SD card)
+ * SPI master and SD card slot
  * From vera_spi.c, Copyright (c) 2019 Michael Steil, 2-clause BSD
  * ================================================================ */
 
-static bool    spi_ss;
-static bool    spi_busy;
-static bool    spi_autotx;
-static uint8_t spi_sending_byte;
-static uint8_t spi_received_byte;
-static float   spi_outcounter;
+/* a byte takes 8 SPI clocks: 12.5 MHz is under one CPU cycle, 390 kHz about 21 */
+#define SPI_CYCLES_FAST 1
+#define SPI_CYCLES_SLOW 21
+
+static bool     spi_ss;
+static bool     spi_busy;
+static bool     spi_autotx;
+static bool     spi_slow;
+static uint8_t  spi_sending_byte;
+static uint8_t  spi_received_byte;
+static unsigned spi_start;
 
 static void vera_spi_init(void)
 {
+    if (spi_ss) sdcard_select(false);
     spi_ss = false;
     spi_busy = false;
     spi_autotx = false;
+    spi_slow = false;
     spi_received_byte = 0xff;
+}
+
+static void spi_start_byte(uint8_t b)
+{
+    spi_sending_byte = b;
+    spi_busy = true;
+    spi_start = ticks;
+}
+
+static void spi_update(void)
+{
+    if (spi_busy && ticks - spi_start >= (spi_slow ? SPI_CYCLES_SLOW : SPI_CYCLES_FAST)) {
+        spi_busy = false;
+        spi_received_byte = sdcard_attached ? sdcard_handle(spi_sending_byte) : 0xff;
+    }
 }
 
 static uint8_t vera_spi_read(uint8_t reg)
 {
+    spi_update();
     switch (reg) {
-        case 0:
-            if (spi_autotx && spi_ss && !spi_busy) {
-                spi_sending_byte = 0xff;
-                spi_busy = true;
-                spi_outcounter = 0;
-            }
-            return spi_received_byte;
+        case 0: {
+            uint8_t b = spi_received_byte;
+            if (spi_autotx && spi_ss && !spi_busy) spi_start_byte(0xff);
+            return b;
+        }
         case 1:
-            return (spi_busy << 7) | (spi_autotx << 2) | spi_ss;
+            return (spi_busy << 7) | (spi_autotx << 2) | (spi_slow << 1) | spi_ss;
     }
     return 0;
 }
 
 static void vera_spi_write(uint8_t reg, uint8_t value)
 {
+    spi_update();
     switch (reg) {
         case 0:
-            if (spi_ss && !spi_busy) {
-                spi_sending_byte = value;
-                spi_busy = true;
-                spi_outcounter = 0;
-            }
+            if (spi_ss && !spi_busy) spi_start_byte(value);
             break;
         case 1:
             if (spi_ss != (value & 1)) {
                 spi_ss = value & 1;
-                /* No sdcard_select — no SD card attached */
+                sdcard_select(spi_ss);
             }
+            spi_slow = !!(value & 2);
             spi_autotx = !!(value & 4);
             break;
     }
@@ -2093,7 +2113,9 @@ void vc_init(vc_t *v)
     reg_composer[0] = 0x21; /* VGA output + L0 enable */
 
     refresh_palette();
-    /* init banner removed */
+
+    const char *sd = getenv("A2_SDCARD");
+    if (sd) sdcard_attach(sd);
 }
 
 uint8_t vc_read(vc_t *v, int reg)

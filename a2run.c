@@ -11,6 +11,7 @@
  *     --disk1 F --disk2 F   Disk ][ images (.dsk/.do DOS order, .po ProDOS order, .nib), slot 6;
  *                           written back to their files at exit (E6) unless --no-writeback
  *     --hd F                ProDOS block device in slot 7 (.po/.hdv/.2mg, up to 32 MB): boots first
+ *     --sdcard F            raw image in the VERA SD slot (A2_SDCARD)
  *     --load FILE@ADDR      copy FILE into RAM at ADDR (hex, $ or 0x optional); repeatable
  *     --pc ADDR             start the CPU at ADDR (I=1, SP=$FF) instead of the ROM reset
  *     --cycles N            stop after N CPU cycles (exit 124)
@@ -226,6 +227,7 @@ int main(int argc, char **argv) {
 		else if (!strcmp(a, "--disk1"))       disk1 = ARG;
 		else if (!strcmp(a, "--disk2"))       disk2 = ARG;
 		else if (!strcmp(a, "--hd"))          hd = ARG;
+		else if (!strcmp(a, "--sdcard"))      setenv("A2_SDCARD", ARG, 1);
 		else if (!strcmp(a, "--no-writeback")) writeback = 0;
 		else if (!strcmp(a, "--load"))        { if (nloads < 32) loads[nloads++] = ARG; }
 		else if (!strcmp(a, "--pc"))          pc = parse_addr(ARG);
