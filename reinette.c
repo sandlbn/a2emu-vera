@@ -152,7 +152,61 @@ static void sdl_title(void *wdo, const char *title) { SDL_SetWindowTitle((SDL_Wi
 //========================================================== PROGRAM ENTRY POINT
 
 #ifndef MAC_FRONTEND   /* POSIniX/Mac: SDL main() disabled; see reinette_mac.c */
+
+static void set_env(const char *name, const char *val) {
+#ifdef _WIN32
+	_putenv_s(name, val);
+#else
+	setenv(name, val, 1);
+#endif
+}
+
+static const char *on_off(const char *v) { return strcmp(v, "off") ? "1" : "0"; }
+
+/* each option sets the matching A2_* variable */
+static int parse_options(int argc, char *argv[]) {
+	static const struct { const char *opt, *env; int arg; } opts[] = {
+		{ "--model",      "A2_MODEL",     1 },
+		{ "--aux",        "A2_AUX",       1 },
+		{ "--sdcard",     "A2_SDCARD",    1 },
+		{ "--wav",        "A2_WAV",       1 },
+		{ "--ym",         "A2_YM",        2 },
+		{ "--vera-slot",  "A2_VERA_SLOT", 1 },
+		{ "--vera-irq",   "A2_VERA_IRQ",  2 },
+		{ "--snesmax",    "A2_SNESMAX",   1 },
+		{ "--warp",       "A2_WARP",      0 },
+		{ "--fps",        "A2_FPS",       0 },
+	};
+	int n = 1;
+	for (int i = 1; i < argc; i++) {
+		const char *a = argv[i];
+		if (!strcmp(a, "--no-speaker")) { set_env("A2_SPEAKER", "0"); continue; }
+		if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
+			printf("usage: a2emu [options] [disk1] [disk2]\n");
+			for (size_t k = 0; k < sizeof opts / sizeof *opts; k++)
+				printf("  %-12s %-6s same as %s\n", opts[k].opt,
+				       opts[k].arg == 2 ? "on|off" : opts[k].arg ? "ARG" : "", opts[k].env);
+			printf("  %-12s %-6s same as A2_SPEAKER=0\n", "--no-speaker", "");
+			exit(0);
+		}
+		size_t k;
+		for (k = 0; k < sizeof opts / sizeof *opts; k++)
+			if (!strcmp(a, opts[k].opt)) break;
+		if (k == sizeof opts / sizeof *opts) {
+			if (a[0] == '-' && a[1] == '-') { fprintf(stderr, "a2emu: unknown option %s\n", a); exit(2); }
+			argv[n++] = argv[i];
+			continue;
+		}
+		if (!opts[k].arg) { set_env(opts[k].env, "1"); continue; }
+		if (++i == argc) { fprintf(stderr, "a2emu: %s needs a value\n", a); exit(2); }
+		set_env(opts[k].env, opts[k].arg == 2 ? on_off(argv[i]) : argv[i]);
+	}
+	argv[n] = NULL;
+	return n;
+}
+
 int main(int argc, char *argv[]) {
+	argc = parse_options(argc, argv);
 
 
 	//========================================================= SDL INITIALIZATION
