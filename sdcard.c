@@ -232,10 +232,17 @@ uint8_t sdcard_handle(uint8_t inbyte)
 	} else if (rxbuf_idx == 515) {  // start token + 512 bytes + CRC
 		rxbuf_idx = 0;
 		if (last_cmd == CMD24 && rxbuf[0] == 0xfe && (int64_t)lba * 512 < card_size) {
+			// data response xxx0 0101 = accepted (xxx0 1101 = write error),
+			// then the card holds the line low (busy) for a few bytes
+			static const uint8_t accepted[] = {0x05, 0x00, 0x00, 0x00};
+			static const uint8_t rejected[] = {0x0d};
 			fseeko(card, (int64_t)lba * 512, SEEK_SET);
-			if (fwrite(rxbuf + 1, 1, 512, card) != 512)
+			if (fwrite(rxbuf + 1, 1, 512, card) != 512 || fflush(card)) {
 				fprintf(stderr, "sdcard: short write at LBA %u\n", lba);
-			fflush(card);
+				set_response(rejected, sizeof rejected);
+			} else
+				set_response(accepted, sizeof accepted);
+			response_counter = 0;
 		}
 	}
 	return out;
