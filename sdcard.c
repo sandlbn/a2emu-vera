@@ -133,7 +133,7 @@ static uint32_t cmd_arg(void)
 
 static void command(void)
 {
-	static const uint8_t r3[] = {0xc0, 0xff, 0x80, 0x00};
+	static uint8_t r3[] = {0x00, 0xc0, 0xff, 0x80, 0x00};  // R1 + OCR (CCS = 1)
 	static const uint8_t r7[] = {0x01, 0x00, 0x00, 0x01, 0xaa};
 	static const uint8_t bad_lba[] = {0x00, 0x08};
 	static uint8_t block[1 + 1 + 512 + 2];
@@ -189,6 +189,7 @@ static void command(void)
 		set_response_r1();
 		break;
 	case CMD58:
+		r3[0] = is_idle;
 		set_response(r3, sizeof r3);
 		break;
 	default:  // CMD16 and anything else: just R1
