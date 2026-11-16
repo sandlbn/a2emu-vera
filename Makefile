@@ -28,7 +28,34 @@ windows: $(SRC)
 	$(MXE)-gcc $(CFLAGS) `$(MXE)-pkg-config --cflags sdl2` -o a2emu.exe $(SRC) ym2151.o ymfm_opm.o \
 	  `$(MXE)-pkg-config --libs sdl2` -lstdc++ -lm
 
-clean:
-	rm -f a2emu a2run a2emu.exe *.o
+# the SDK's boot sector, built once: a2fs mkimage patches its parameters
+sdk/boot.sector: sdk/boot.s
+	cl65 -t none --start-addr 0x800 -o $@ $<
+	rm -f sdk/boot.o
 
-.PHONY: all windows clean
+# make install: binaries + assets/ (+ rom/ if present) + sdk/ in DATADIR,
+# a2emu/a2run/a2fs in BINDIR
+DATADIR ?= $(HOME)/.local/share/a2emu-vera
+BINDIR  ?= $(HOME)/bin
+SDKFILES = sdk/boot.s sdk/boot.sector sdk/rwts.s sdk/a2fs.c sdk/a2fs.h sdk/a2emu-vera.cfg
+install: a2emu a2run sdk/boot.sector
+	mkdir -p $(DATADIR)/assets $(DATADIR)/sdk $(BINDIR)
+	install -m755 a2emu a2run $(DATADIR)/
+	install -m644 assets/*.bmp $(DATADIR)/assets/
+	install -m644 $(SDKFILES) $(DATADIR)/sdk/
+	if [ -d rom ] && [ rom -ef $(DATADIR)/rom ]; then :; \
+	elif [ -d rom ]; then mkdir -p $(DATADIR)/rom && install -m644 rom/* $(DATADIR)/rom/; \
+	else echo "note: no rom/ here, put the Apple ROMs in $(DATADIR)/rom"; fi
+	for s in a2emu a2run; do \
+	  sed 's|@DATADIR@|$(DATADIR)|' scripts/$$s.in > $(BINDIR)/$$s && chmod 755 $(BINDIR)/$$s; done
+	sed 's|@DATADIR@|$(DATADIR)|' tools/a2fs.py > $(BINDIR)/a2fs && chmod 755 $(BINDIR)/a2fs
+
+# keeps $(DATADIR)/rom: the ROMs may live only there
+uninstall:
+	rm -f $(BINDIR)/a2emu $(BINDIR)/a2run $(BINDIR)/a2fs
+	rm -rf $(DATADIR)/a2emu $(DATADIR)/a2run $(DATADIR)/assets $(DATADIR)/sdk
+
+clean:
+	rm -f a2emu a2run a2emu.exe *.o sdk/boot.sector
+
+.PHONY: all windows install uninstall clean

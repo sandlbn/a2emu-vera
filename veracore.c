@@ -1907,7 +1907,6 @@ video_write_reg(uint8_t reg, uint8_t value)
             /* vc_dbg_wr: census of every DATA port write by target region, so
                "the routine ran but VRAM is zero" can be attributed. */
             { extern unsigned long vc_wr_bucket[16];
-unsigned long vc_wr_nz[16];
               uint32_t wa = io_addr[reg - 3] & 0x1FFFF;
               vc_wr_bucket[wa >> 13]++;
               /* separate NON-ZERO writes: a game that clears the nametable

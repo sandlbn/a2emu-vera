@@ -1,0 +1,3 @@
+#!/bin/sh
+# a2emu-vera headless runner: finds rom/ next to its own executable
+exec "@DATADIR@/a2run" "$@"

@@ -2329,11 +2329,11 @@ uint16_t puce6502Exec(unsigned int cycleCount) {
 					           fV = (b8 & OFLOW) != 0; ticks += 4; NEXT();
 					case 0x04: w16 = fetch(PC); PC++; b8 = readMem(w16);             /* TSB zp */
 					           fZv = (unsigned char)(A & b8); writeMem(w16, b8 | A); ticks += 5; NEXT();
-					case 0x0C: C02_ABS(); b8 = readMem(w16);                         /* TSB abs */
+					case 0x0C: (void)C02_ABS(); b8 = readMem(w16);                        /* TSB abs */
 					           fZv = (unsigned char)(A & b8); writeMem(w16, b8 | A); ticks += 6; NEXT();
 					case 0x14: w16 = fetch(PC); PC++; b8 = readMem(w16);             /* TRB zp */
 					           fZv = (unsigned char)(A & b8); writeMem(w16, b8 & ~A); ticks += 5; NEXT();
-					case 0x1C: C02_ABS(); b8 = readMem(w16);                         /* TRB abs */
+					case 0x1C: (void)C02_ABS(); b8 = readMem(w16);                        /* TRB abs */
 					           fZv = (unsigned char)(A & b8); writeMem(w16, b8 & ~A); ticks += 6; NEXT();
 					case 0x7C: w16 = (uint16_t)(C02_ABS() + X);                       /* JMP (abs,X) */
 					           PC = (uint16_t)(readMem(w16) | (readMem((uint16_t)(w16 + 1)) << 8));

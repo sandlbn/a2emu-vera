@@ -36,6 +36,11 @@
 #include <SDL2/SDL.h>
 #endif
 
+/* SDL_HINT_APP_NAME appeared in SDL 2.0.22; older versions just ignore the hint */
+#ifndef SDL_HINT_APP_NAME
+#define SDL_HINT_APP_NAME "SDL_APP_NAME"
+#endif
+
 #include "puce6502.h"
 #include "veracore.h"
 #include "a2core.h"
@@ -245,6 +250,9 @@ int main(int argc, char *argv[]) {
 	   clicks) and the A2VERA card (VERA PSG + PCM + YM2151, stereo: record this one).
 	   A2_SPEAKER=0 leaves the speaker stream out, so only the card's stereo shows. */
 	SDL_SetHint(SDL_HINT_APP_NAME, "a2emu");
+#ifdef SDL_HINT_AUDIO_DEVICE_APP_NAME
+	SDL_SetHint(SDL_HINT_AUDIO_DEVICE_APP_NAME, "a2emu");
+#endif
 	const char *spk = getenv("A2_SPEAKER");
 	if (!spk || atoi(spk)) {
 		SDL_SetHint(SDL_HINT_AUDIO_DEVICE_STREAM_NAME, "Apple II speaker (mono)");

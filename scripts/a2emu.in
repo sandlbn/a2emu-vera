@@ -1,0 +1,14 @@
+#!/bin/sh
+# a2emu-vera (Apple II + A2VERA): the emulator loads rom/ and assets/ from the
+# current directory, so run it from its install dir with absolute file args.
+D="@DATADIR@"
+n=$#
+while [ $n -gt 0 ]; do
+	a=$1; shift; n=$((n - 1))
+	case $a in
+		/*|-*) ;;
+		*) [ -e "$a" ] && a="$PWD/$a" ;;
+	esac
+	set -- "$@" "$a"
+done
+cd "$D" && exec "$D/a2emu" "$@"

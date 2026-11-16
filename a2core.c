@@ -1081,7 +1081,7 @@ uint8_t softSwitches(uint16_t address, uint8_t value, bool WRT) {
   		else                                                                      // reading
   			dLatch=disk[curDrv].data[disk[curDrv].track*0x1A00+disk[curDrv].nibble];// easy peasy
   		{ static int dbgn=0; extern int g_disk_dbg; if(g_disk_dbg && dbgn<32){ fprintf(stderr,"[nib] drv=%d trk=%d nib=%d val=%02X motor=%d\n",curDrv,disk[curDrv].track,disk[curDrv].nibble,dLatch,disk[curDrv].motorOn); dbgn++; } }
-  		disk[curDrv].nibble = (disk[curDrv].nibble + 1) % 0x1A00;                 // turn floppy of 1 nibble
+  		disk[curDrv].nibble = (disk[curDrv].nibble + 1) % (g_disktime ? dt_ntrk : 0x1A00);   // turn floppy of 1 nibble
   		return dLatch;
 
   	case 0xC0ED: dLatch = value; break;                                         // Load Data Latch
@@ -1090,7 +1090,11 @@ uint8_t softSwitches(uint16_t address, uint8_t value, bool WRT) {
   		disk[curDrv].writeMode = false;
   		return disk[curDrv].readOnly ? 0x80 : 0;                                  // check protection
 
-  	case 0xC0EF: disk[curDrv].writeMode = true; break;                          // latch for WRITE
+  	case 0xC0EF:                                                                // latch for WRITE
+  		if (g_disktime && dt_spinning && !disk[curDrv].writeMode)                 // timed: start on the nibble
+  			disk[curDrv].nibble = (dt_head() + 1) % dt_ntrk;                        //   coming under the head, not
+  		disk[curDrv].writeMode = true;                                            //   over the one already read
+  		break;
 
   	/* --- slot-7 ProDOS hard-disk card I/O registers --- */
   	case 0xC0F0: if (WRT) hd_cmd   = value;                          break;     // command
@@ -1328,11 +1332,11 @@ int reinetteLoadState(const char *path) {
 			 * reading it.  Host-generated snapshots embed HOST paths -- if the
 			 * exact path fails, retry by basename in the disk library dir. */
 			if (!insertFloppy((void *)0, fn, d)) {
-				char alt[420]; const char *base = strrchr(fn, '/');
-				snprintf(alt, sizeof alt, "/usr/games/appleII/disk/%s",
-				         base ? base + 1 : fn);
-				if (insertFloppy((void *)0, alt, d))
-					strncpy(fn, alt, sizeof fn - 1);   /* keep state consistent */
+				char alt[sizeof fn]; const char *base = strrchr(fn, '/');
+				int n = snprintf(alt, sizeof alt, "/usr/games/appleII/disk/%s",
+				                 base ? base + 1 : fn);
+				if (n >= 0 && (size_t)n < sizeof alt && insertFloppy((void *)0, alt, d))
+					strcpy(fn, alt);   /* keep state consistent */
 			}
 		}
 		if (fn[0]) {
